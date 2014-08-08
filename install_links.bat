@@ -1,0 +1,1 @@
+mklink /D .\node_modules\itemTagsDB ..\..\itemTagsDB
