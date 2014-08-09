@@ -2,6 +2,7 @@ var EventEmitter = require('events').EventEmitter;
 var inherits = require('util').inherits;
 var Async = require('async');
 var Path = require('path');
+var Uuid = require('uuid');
 
 var Sniffer = module.exports = function (options) {
 
@@ -53,6 +54,7 @@ function configure(options){
         var snifferConfig = items[0].getTagValue('snifferConfig');
         if(snifferConfig && snifferConfig.database){
           self._itDB = require('itemTagsDB')({database: snifferConfig.database});
+          self._tmpDB = require('itemTagsDB')({database: 'sniffer_'+Uuid.v1()});
           self.emit('ready');
         }else{
           self.emit('error');
@@ -70,13 +72,16 @@ function getDB(iCallback){
 
 function doSniff(iCallback){
   var self = this;
+  if(!iCallback)
+    iCallback = function(){};
+  
   if(!this._configDB){
     iCallback('no configDB');
   }
 
-  self._itDB.deleteAll(function(err){
+  self._tmpDB.deleteAll(function(err){
     if(err){
-      if(iCallback) iCallback(err);
+      iCallback(err);
     }else{
       self._configDB.fetchItemsSharingTags(['sniffPath'], function(err, items){
         if(!err){
@@ -90,22 +95,24 @@ function doSniff(iCallback){
           var testIfLastCallback = function (err){
             if((sniffPathReportsProcessed == items.length))
             {
-              if(iCallback) iCallback(err);
+              _finalMergeCommit(self._tmpDB, self._itDB, function(err){
+                self._tmpDB.deleteAll(iCallback);
+              });
             }
           };
 
           for(var sniffPathIdx = 0; sniffPathIdx<items.length; sniffPathIdx++){
                     
-            var watchTask = {
+            var sniffTask = {
               "sniffPath": items[sniffPathIdx],
               "configDB": self._configDB
             };
 
-            sniffingQueue.push(watchTask, function(err, iSniffReport){
+            sniffingQueue.push(sniffTask, function(err, iSniffReport){
               
               if(!err){
                 console.log(iSniffReport);
-                _handleWatchReport_(iSniffReport, self._itDB, function(err){
+                _handleSniffReport_(iSniffReport, self._itDB, self._tmpDB, function(err){
                   sniffPathReportsProcessed ++;
                   testIfLastCallback(err);
                 });
@@ -124,6 +131,25 @@ function doSniff(iCallback){
   })
 
   
+}
+
+function _finalMergeCommit(iTmpDB, iStoreDB, iCallback){
+  iTmpDB.diffDb(iStoreDB, _fileUriFilter_('/'), function(err, iDiffReport){
+    if(!iCallback)
+      iCallback = function(){};
+    if(err){
+      iCallback(err);
+    }else{
+      var itemsToAdd = iDiffReport['onlyDB1'];
+      var itemsToRemove = iDiffReport['onlyDB2'];
+      Async.series(
+        [
+          function(iCallback){return iStoreDB.saveMany(itemsToAdd, iCallback);},
+          function(iCallback){return iStoreDB.deleteMany(itemsToRemove, iCallback);},
+        ], iCallback);
+      
+    }
+  });
 }
 
 function _handleSniffPath_(iSniffTask, iCallback){
@@ -199,20 +225,25 @@ function _handleFtpPaths_(iFtpConfig, iPath, iTagWith, iCallback){
 }
 
 function _fileUriFilter_(iUri){
-  return JSON.stringify({
+  return {
     "@file" : {"uri" : iUri}
-  });
+  };
 }
 
-function _handleWatchReport_(iSniffReport, iStoreDB, iCallback){
-  if(!iStoreDB){
-    if(iCallback)
-      iCallback('no store db');
-    return;
-  }
+function _handleSniffReport_(iSniffReport, iRefDB, iTmpStoreDB, iCallback){
   if(!iCallback)
     iCallback = function(){};
 
+  if(!iRefDB){
+      iCallback('no ref db');
+    return;
+  }
+
+  if(!iTmpStoreDB){
+      iCallback('no store db');
+    return;
+  }
+  
   var Entries = [];
   for(var iEntry in iSniffReport){
     Entries.push(iSniffReport[iEntry]);
@@ -221,10 +252,10 @@ function _handleWatchReport_(iSniffReport, iStoreDB, iCallback){
   //Here is items creation !
   function handleNextEntry(iCallback){
     var entry = Entries.shift();
-    iStoreDB.fetchOneByFilter(_fileUriFilter_(entry.uri), (function(iEntry){
+    iRefDB.fetchOneByFilter(_fileUriFilter_(entry.uri), (function(iEntry){
       return function(err, item){
         if(err){          
-          item = iStoreDB.getNewItem(
+          item = iTmpStoreDB.getNewItem(
           {
             "@file" : {
               "uri" : iEntry['uri']
@@ -233,7 +264,7 @@ function _handleWatchReport_(iSniffReport, iStoreDB, iCallback){
         }
         
         item.addTags(iEntry['tagWith']);
-        iStoreDB.save(item, function(err, item){
+        iTmpStoreDB.save(item, function(err, item){
           if(iCallback)
             iCallback();
         });
@@ -245,7 +276,7 @@ function _handleWatchReport_(iSniffReport, iStoreDB, iCallback){
   Async.until( function(){return (Entries.length <= 0);}, handleNextEntry, iCallback);
 }
 
-function _handleDummyPaths_(iDummyWatchPath, iCallback){
+function _handleDummyPaths_(iDummySniffPath, iCallback){
   var watchReport = {
     0:{
       'uri':'ftp://bidule:truc@serveur.fr:21/path/to/heaven.avi',
@@ -263,7 +294,7 @@ function _handleDummyPaths_(iDummyWatchPath, iCallback){
 
 }
 
-function _handleDummyPaths2_(iDummyWatchPath, iCallback){
+function _handleDummyPaths2_(iDummySniffPath, iCallback){
   var watchReport = {
     0:{
       'uri':'ftp://bidule:truc@serveur.fr:21/path/to/hell.avi',
