@@ -71,6 +71,7 @@ function getDB(iCallback){
 }
 
 function doSniff(iCallback){
+  console.log('start doSniff');
   var self = this;
   if(!iCallback)
     iCallback = function(){};
@@ -95,8 +96,9 @@ function doSniff(iCallback){
           var testIfLastCallback = function (err){
             if((sniffPathReportsProcessed == items.length))
             {
-              _finalMergeCommit(self._tmpDB, self._itDB, function(err){
+              _finalMergeCommit(self._tmpDB, self._itDB, function(err){                
                 self._tmpDB.deleteAll(iCallback);
+                console.log('end doSniff');
               });
             }
           };
@@ -111,7 +113,7 @@ function doSniff(iCallback){
             sniffingQueue.push(sniffTask, function(err, iSniffReport){
               
               if(!err){
-                console.log(iSniffReport);
+                // console.log(iSniffReport);
                 _handleSniffReport_(iSniffReport, self._itDB, self._tmpDB, function(err){
                   sniffPathReportsProcessed ++;
                   testIfLastCallback(err);
